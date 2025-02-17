@@ -2,6 +2,7 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, unix_timestamp, when, avg, stddev, count, sum, expr, dayofweek, month, desc
 from pyspark.sql.utils import AnalysisException
+from pyspark.sql.streaming import Trigger
 
 spark = SparkSession.builder \
     .appName("NYC_TLC_Processing") \
@@ -20,8 +21,9 @@ except AnalysisException as e:
     spark.stop()
     exit()
 
-# This below code is from Kafka  
+# This below code is from Kafka
 
+# Kafka Read Options
 read_opts_trip_data = {
     'kafka.bootstrap.servers': '-',
     'subscribe': '-',
@@ -36,9 +38,40 @@ read_opts_zone_lookup = {
     'failOnDataLoss': 'true'
 }
 
+# Checkpoint Locations
+trip_data_checkpoint = "/mnt/checkpoints/trip_data"
+zone_lookup_checkpoint = "/mnt/checkpoints/zone_lookup"
+output_checkpoint = "/mnt/checkpoints/output"
+
 try:
-    trip_data = spark.readStream.format("kafka").options(**read_opts_trip_data).load()
-    zone_lookup = spark.readStream.format("kafka").options(**read_opts_zone_lookup).load()
+    # Read Stream with Trigger and Checkpointing
+    trip_data = (
+        spark.readStream
+        .format("kafka")
+        .options(**read_opts_trip_data)
+        .load()
+        .withWatermark("timestamp", "10 minutes")  # Optional: Handles late data
+    )
+
+    zone_lookup = (
+        spark.readStream
+        .format("kafka")
+        .options(**read_opts_zone_lookup)
+        .load()
+        .withWatermark("timestamp", "4 hours") 
+    )
+
+    # Write Stream with Trigger and Checkpointing
+    query = (
+        trip_data.writeStream
+        .format("console")  # Change to "parquet", "delta", "kafka", etc.
+        .option("checkpointLocation", output_checkpoint)  # Checkpointing for output
+        .trigger(Trigger.ProcessingTime("10 seconds"))  # Trigger for writing
+        .start()
+    )
+
+    query.awaitTermination()
+
 except AnalysisException as e:
     print(f"Data loading error: {e}")
     spark.stop()
